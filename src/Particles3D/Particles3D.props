@@ -1,0 +1,17 @@
+<Project>
+  <PropertyGroup>
+    <Platform Condition="$(Platform) == ''">x64</Platform>
+    <Configuration Condition="$(Configuration) == ''">Debug</Configuration>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Platforms>AnyCPU;x64</Platforms>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>12.0</LangVersion>
+    <TieredCompilation>false</TieredCompilation>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <CopyDebugSymbolFilesFromPackages>true</CopyDebugSymbolFilesFromPackages>
+    <CopyDocumentationFilesFromPackages>true</CopyDocumentationFilesFromPackages>
+  </PropertyGroup>
+  
+  <Import Project="./Particles3D.targets" />
+</Project>
