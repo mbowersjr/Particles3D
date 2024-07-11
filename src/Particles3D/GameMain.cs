@@ -1,4 +1,5 @@
-﻿using System.Xml.Linq;
+﻿using System;
+using System.Xml.Linq;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
@@ -12,34 +13,42 @@ namespace Particles3D;
 
 public class GameMain : Game
 {
-    private const bool UseIndexedVertices = true;
-    private const bool UseDynamicBuffers = false;
-    private const bool DrawGeometrySeparately = true;
+    private const bool DrawAsSprites = false;
+    private const bool DrawAsQuads = true;
+
+    private SpriteBatch _spriteBatch;
 
     public Matrix View => _view;
     public Matrix Projection => _projection;
     public Matrix World => _world;
-    public Vector3 CameraPosition => _cameraPosition;
-    public Vector3 CameraTarget => _cameraTarget;
     public bool IsCameraOrbiting { get; set; } = false;
 
     
     private GraphicsDeviceManager _graphics;
     private ParticleManager _particleManager;
-
-
-    private Vector3 _cameraPosition = new Vector3(0f, 0f, -100f);
-    private Vector3 _cameraTarget = new Vector3(0f, 0f, 0f);
+    
+    private OrthographicCamera _camera;
+    private ViewportAdapter _viewportAdapter;
+    private Vector3 _cameraPosition = new Vector3(0f, 25f, 150f);
+    private Vector3 _cameraTarget = Vector3.Zero;
+    private Vector3 _cameraDirection = Vector3.Forward;
+    private float _cameraTargetDistance;
+    private float _aspectRatio;
+    private float _fieldOfView = MathHelper.ToRadians(45f);
+    private Matrix _world;
     private Matrix _view;
     private Matrix _projection;
-    private Matrix _world;
     private bool _cameraViewDirty = false;
     private BasicEffect _effect;
     private ParticleGeometry[] _particleGeometries;
-
     private VertexBuffer _vertexBuffer;
     private IndexBuffer _indexBuffer;
-    
+    private Texture2D _pixelTexture;
+    private readonly Vector2 _pixelOrigin = new Vector2(0.5f, 0.5f);
+    private float _nearPlane = 0.01f;
+    private float _farPlane = 100000f;
+    private Quaternion _orbitRotation = Quaternion.CreateFromAxisAngle(Vector3.Up, MathHelper.ToRadians(1f));
+
     public GameMain()
     {
         _graphics = new GraphicsDeviceManager(this);
@@ -49,7 +58,7 @@ public class GameMain : Game
         IsMouseVisible = true;
         Window.AllowUserResizing = false;
 
-        _particleManager = new ParticleManager(this, maxParticles: 1000);
+        _particleManager = new ParticleManager(this, maxParticles: 10000);
         Services.AddService(_particleManager);
     }
 
@@ -61,28 +70,31 @@ public class GameMain : Game
         _graphics.PreferMultiSampling = true;
         
         _graphics.ApplyChanges();
+
+        _aspectRatio = (float)_graphics.GraphicsDevice.PresentationParameters.BackBufferWidth / (float)_graphics.GraphicsDevice.PresentationParameters.BackBufferHeight;
     }
 
-    private void InitMatrices()
+
+    private void UpdateMatrices()
     {
-        float aspectRatio = (float)_graphics.PreferredBackBufferWidth / (float)_graphics.PreferredBackBufferHeight;
-        float fieldOfView = MathHelper.ToRadians(45f);
+        _cameraDirection = Vector3.Normalize(_cameraTarget - _cameraPosition);
+        _cameraTarget = _cameraDirection * _cameraTargetDistance;
 
         _world = Matrix.CreateWorld(
-            position: Vector3.Zero, 
-            forward: Vector3.Forward, 
+            position: _cameraPosition, 
+            forward: _cameraDirection, 
             up: Vector3.Up
         );
         _view = Matrix.CreateLookAt(
             cameraPosition: _cameraPosition, 
-            cameraTarget: _cameraTarget, 
+            cameraTarget: _cameraDirection, 
             cameraUpVector: Vector3.Up
         );
         _projection = Matrix.CreatePerspectiveFieldOfView(
-            fieldOfView: fieldOfView,
-            aspectRatio: aspectRatio,
-            nearPlaneDistance: 0.01f,
-            farPlaneDistance: 1000f
+            fieldOfView: _fieldOfView,
+            aspectRatio: _aspectRatio,
+            nearPlaneDistance: _nearPlane,
+            farPlaneDistance: _farPlane
         );
     }
 
@@ -92,76 +104,126 @@ public class GameMain : Game
 
         InitializeGraphics();
 
-        InitMatrices();
+        //_viewportAdapter = new BoxingViewportAdapter(Window, GraphicsDevice, _graphics.PreferredBackBufferWidth, _graphics.PreferredBackBufferHeight);
+        _viewportAdapter = new WindowViewportAdapter(Window, GraphicsDevice);
+        _camera = new OrthographicCamera(_viewportAdapter);
         
         _effect = new BasicEffect(GraphicsDevice);
+
+        UpdateMatrices();
+        
+        _particleManager.Initialize();
+    }
+
+    private Effect UpdateEffect(ref ParticleGeometry particleGeometry)
+    {
+        Matrix translation = Matrix.CreateTranslation(particleGeometry.Position);
+        Matrix scale = Matrix.CreateScale(particleGeometry.Size * 0.5f);
+        
+        _effect.World = scale * translation;
+        _effect.View = _view;
+        _effect.Projection = _projection;
+        _effect.Alpha = particleGeometry.Color.A / 255f;
+
         _effect.VertexColorEnabled = true;
+        _effect.TextureEnabled = false;
         _effect.LightingEnabled = false;
 
-        _particleManager.Initialize();
-
+        return _effect;
     }
 
     protected override void LoadContent()
     {
+        _spriteBatch = new SpriteBatch(GraphicsDevice);
+
+        _pixelTexture = new Texture2D(GraphicsDevice, 1, 1, false, SurfaceFormat.Color);
+        _pixelTexture.SetData<Color>(new Color[] { Color.White });
+
         _particleManager.LoadContent();
     }
 
     private void HandleInput(GameTime gameTime)
     {
-        KeyboardExtended.Refresh();
-        var keyboardState = KeyboardExtended.GetState();
+        KeyboardExtended.Update();
+        MouseExtended.Update();
 
-        if (keyboardState.IsKeyPressed(Keys.Escape) || keyboardState.IsKeyPressed(Keys.Q))
+        var keyboard = KeyboardExtended.GetState();
+
+        if (keyboard.WasKeyPressed(Keys.Escape) || keyboard.WasKeyPressed(Keys.Q))
         {
             Exit();
         }
         
-        if (keyboardState.IsKeyPressed(Keys.R))
+        if (keyboard.WasKeyPressed(Keys.R))
         {
-            // Toggle camera rotation
             IsCameraOrbiting = !IsCameraOrbiting;
         }
 
-        Vector3 cameraPositionMovement = Vector3.Zero;
-        Vector3 cameraTargetMovement = Vector3.Zero;
+        HandleCameraMovement(gameTime);
 
-        if (keyboardState.IsKeyDown(Keys.W))
+    }
+
+    private void HandleCameraMovement(GameTime gameTime)
+    {
+        KeyboardStateExtended keyboard = KeyboardExtended.GetState();
+        //MouseStateExtended mouse = MouseExtended.GetState();
+
+
+        //Vector3 cameraPositionMovement = Vector3.Zero;
+        //Vector3 cameraTargetMovement = Vector3.Zero;
+        float movementSpeed = 40f * (float)gameTime.ElapsedGameTime.TotalSeconds;
+        
+        Matrix cameraTranslation = Matrix.Identity;
+
+        if (keyboard.IsKeyDown(Keys.W))
         {
-            cameraPositionMovement += Vector3.Forward;
-            cameraTargetMovement += Vector3.Forward;
-        }
-        if (keyboardState.IsKeyDown(Keys.S))
-        {
-            cameraPositionMovement += Vector3.Backward;
-            cameraTargetMovement += Vector3.Backward;
-        }
-        if (keyboardState.IsKeyDown(Keys.A))
-        {
-            cameraPositionMovement += Vector3.Left;
-            cameraTargetMovement += Vector3.Left;
-        }
-        if (keyboardState.IsKeyDown(Keys.D))
-        {
-            cameraPositionMovement += Vector3.Right;
-            cameraTargetMovement += Vector3.Right;
-        }
-        if (keyboardState.IsKeyDown(Keys.Space))
-        {
-            cameraPositionMovement += Vector3.Up;
-            cameraTargetMovement += Vector3.Up;
-        }
-        if (keyboardState.IsControlDown())
-        {
-            cameraPositionMovement += Vector3.Down;
-            cameraTargetMovement += Vector3.Down;
+            cameraTranslation *= Matrix.CreateTranslation(_world.Forward * movementSpeed);
+            //cameraPositionMovement += Vector3.Forward;
+            //cameraTargetMovement += Vector3.Forward;
         }
 
-        float movementSpeed = 2f; // * (float)gameTime.ElapsedGameTime.TotalSeconds;
+        if (keyboard.IsKeyDown(Keys.S))
+        {
+            cameraTranslation *= Matrix.CreateTranslation(_world.Backward * movementSpeed);
+            //cameraPositionMovement += Vector3.Backward;
+            //cameraTargetMovement += Vector3.Backward;
+        }
+        
+        if (keyboard.IsKeyDown(Keys.A))
+        {
+            cameraTranslation *= Matrix.CreateTranslation(_world.Left * movementSpeed);
+            //cameraPositionMovement += Vector3.Left;
+            //cameraTargetMovement += Vector3.Left;
+        }
+        
+        if (keyboard.IsKeyDown(Keys.D))
+        {
+            cameraTranslation *= Matrix.CreateTranslation(_world.Right * movementSpeed);
+            //cameraPositionMovement += Vector3.Right;
+            //cameraTargetMovement += Vector3.Right;
+        }
+        
+        if (keyboard.IsKeyDown(Keys.Space))
+        {
+            cameraTranslation *= Matrix.CreateTranslation(_world.Up * movementSpeed);
+            //cameraPositionMovement += Vector3.Up;
+            //cameraTargetMovement += Vector3.Up;
+        }
+        
+        if (keyboard.IsControlDown())
+        {
+            cameraTranslation *= Matrix.CreateTranslation(_world.Down * movementSpeed);
+            //cameraPositionMovement += Vector3.Down;
+            //cameraTargetMovement += Vector3.Down;
+        }
 
-        _cameraPosition += cameraPositionMovement * movementSpeed;
-        _cameraTarget += cameraTargetMovement * movementSpeed;
+        if (cameraTranslation != Matrix.Identity)
+        {
+            Vector3.Transform(ref _cameraPosition, ref cameraTranslation, out _cameraPosition);
+        }
 
+        //_cameraPosition += cameraPositionMovement * movementSpeed;
+        //_cameraTarget += cameraTargetMovement * movementSpeed;
     }
 
     protected override void Update(GameTime gameTime)
@@ -170,8 +232,8 @@ public class GameMain : Game
 
         if (IsCameraOrbiting)
         {
-            //Matrix rotation = Matrix.CreateRotationY(MathHelper.ToRadians(1f));
-            Quaternion rotation = Quaternion.CreateFromAxisAngle(Vector3.Up, 1f);
+            float degrees = 10f * (float)gameTime.ElapsedGameTime.TotalSeconds;
+            Quaternion rotation = Quaternion.CreateFromAxisAngle(Vector3.Up, MathHelper.ToRadians(degrees));
             Vector3.Transform(ref _cameraPosition, ref rotation, out _cameraPosition);
         }
 
@@ -182,265 +244,154 @@ public class GameMain : Game
 
     protected override void Draw(GameTime gameTime)
     {
-        _particleManager.Draw(gameTime, out _particleGeometries);
+        _particleManager.Draw(gameTime, ref _particleGeometries);
 
         GraphicsDevice.Clear(Color.Gray);
 
-        InitMatrices();
+        UpdateMatrices();
 
-        //var rasterizerState = new RasterizerState();
-        //rasterizerState.CullMode = CullMode.None;
-        //GraphicsDevice.RasterizerState = rasterizerState;
+        if (DrawAsQuads)
+        {
+            DrawParticleGeometry();
+        }
 
-        if (DrawGeometrySeparately)
+        if (DrawAsSprites)
         {
-            for (int i = 0; i < _particleGeometries.Length; i++)
-            {
-                DrawParticleGeometry(ref _particleGeometries[i], _world, _view, _projection);
-            }
+            DrawParticlesAsSprites();
         }
-        else
-        {
-            DrawAllGeometry(_world, _view, _projection);
-        }
-        
+
         base.Draw(gameTime);
     }
 
-    private void InitBuffers()
+    private void DrawParticlesAsSprites()
     {
-        int verticesCount = 0;
-        int indicesCount = 0;
+        _spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.PointClamp);
 
         for (int i = 0; i < _particleGeometries.Length; i++)
         {
-            _particleGeometries[i].Translate(Matrix.CreateTranslation(_particleGeometries[i].Position));
-            
-            verticesCount += _particleGeometries[i].Vertices.Length;
-            indicesCount += _particleGeometries[i].Indices.Length;
+            ParticleGeometry particle = _particleGeometries[i];
+
+            Vector3 position = _viewportAdapter.Viewport.Project(_particleGeometries[i].Position, _projection, _view, _world);
+
+            if (position.Z > 1)
+                continue;
+
+            _spriteBatch.Draw(
+                texture: _pixelTexture,
+                position: new Vector2(position.X, position.Y),
+                sourceRectangle: null,
+                color: _particleGeometries[i].Color,
+                rotation: 0f,
+                origin: _pixelOrigin,
+                scale: new Vector2(particle.Size),
+                layerDepth: 1.0f,
+                effects: SpriteEffects.None
+            );
         }
-        
-        VertexPositionColor[] vertices = new VertexPositionColor[verticesCount];
-        short[] indices = new short[indicesCount];
+
+        _spriteBatch.End();
+    }
+    
+    
+    private ushort[] _indexData;
+    private VertexPositionColor[] _vertexData;
+    private int _vertexBufferSize = 0;
+    private int _indexBufferSize = 0;
+    private unsafe void UpdateBuffers()
+    {
+        if (_particleGeometries.Length == 0)
+            return;
+
+        int totalVtxCount = 0;
+        int totalIdxCount = 0;
 
         for (int i = 0; i < _particleGeometries.Length; i++)
         {
-            _particleGeometries[i].Vertices.CopyTo(vertices, i * 4);
+            if (!_particleGeometries[i].IsActive)
+                continue;
 
-            if (UseIndexedVertices)
-            {
-                _particleGeometries[i].Indices.CopyTo(indices, i * 6);
-
-                // Move index values up to relative vertices in the new array
-                for (int j = 0; j < _particleGeometries[i].Indices.Length; j++)
-                {
-                    indices[i * 6 + j] += (short)(i * 4);
-                }
-            }
+            totalVtxCount += _particleGeometries[i].Vertices.Length;
+            totalIdxCount += _particleGeometries[i].Indices.Length;
         }
 
-        if (UseDynamicBuffers)
+        if (totalVtxCount > _vertexBufferSize)
         {
-            _vertexBuffer = new DynamicVertexBuffer(
-                graphicsDevice: GraphicsDevice,
-                type: typeof(VertexPositionColor),
-                vertexCount: vertices.Length,
-                bufferUsage: BufferUsage.WriteOnly
-            );
-            
-            if (UseIndexedVertices)
-            {
-                _indexBuffer = new DynamicIndexBuffer(
-                    graphicsDevice: GraphicsDevice,
-                    indexType: typeof(short),
-                    indexCount: indices.Length,
-                    usage: BufferUsage.WriteOnly
-                );
+            _vertexBuffer?.Dispose();
 
-            }
+            _vertexBufferSize = (int)(totalVtxCount * 1.5f);
+            _vertexBuffer = new DynamicVertexBuffer(GraphicsDevice, VertexPositionColor.VertexDeclaration, _vertexBufferSize, BufferUsage.None);
+            _vertexData = new VertexPositionColor[_vertexBufferSize];
         }
-        else
+
+        if (totalIdxCount > _indexBufferSize)
         {
-            _vertexBuffer = new VertexBuffer(
-                graphicsDevice: GraphicsDevice, 
-                type: typeof(VertexPositionColor),
-                vertexCount: vertices.Length,
-                bufferUsage: BufferUsage.WriteOnly
-            );
-            
-            if (UseIndexedVertices)
-            {
-                _indexBuffer = new IndexBuffer(
-                    graphicsDevice: GraphicsDevice, 
-                    indexType: typeof(short), 
-                    indexCount: indices.Length, 
-                    usage: BufferUsage.WriteOnly
-                );
-            }
+            _indexBuffer?.Dispose();
+
+            _indexBufferSize = (int)(totalIdxCount * 1.5f);
+            _indexBuffer = new DynamicIndexBuffer(GraphicsDevice, IndexElementSize.SixteenBits, _indexBufferSize, BufferUsage.None);
+            _indexData = new ushort[_indexBufferSize];
         }
+
+        int vtxOffset = 0;
+        int idxOffset = 0;
         
-        if (vertices.Length > 0) 
-            _vertexBuffer.SetData<VertexPositionColor>(vertices);
-            
-        GraphicsDevice.SetVertexBuffer(_vertexBuffer);
-
-        if (UseIndexedVertices)
+        for (int i = 0; i < _particleGeometries.Length; i++)
         {
-            if (indices.Length > 0)
-                _indexBuffer.SetData(indices);
+            if (!_particleGeometries[i].IsActive)
+                continue;
 
-            GraphicsDevice.Indices = _indexBuffer;
+            Span<VertexPositionColor> vtxSrc = _particleGeometries[i].Vertices;
+            Span<VertexPositionColor> vtxDest = _vertexData.AsSpan().Slice(vtxOffset, vtxSrc.Length);
+            vtxSrc.CopyTo(vtxDest);
+
+            Span<ushort> idxSrc = _particleGeometries[i].Indices;
+            Span<ushort> idxDest = _indexData.AsSpan().Slice(idxOffset, idxSrc.Length);
+            idxSrc.CopyTo(idxDest);
+
+            vtxOffset += vtxSrc.Length;
+            idxOffset += idxSrc.Length;
         }
+
+        _vertexBuffer.SetData(_vertexData, 0, _vertexData.Length);
+        _indexBuffer.SetData(_indexData, 0, _indexData.Length);
     }
 
-    private void DrawAllGeometry(Matrix world, Matrix view, Matrix projection)
+
+    private void DrawParticleGeometry()
     {
-        _effect.World = world;
-        _effect.View = view;
-        _effect.Projection = projection;
+        UpdateBuffers();
 
-        GraphicsDevice.RasterizerState = RasterizerState.CullCounterClockwise;
+        GraphicsDevice.SetVertexBuffer(_vertexBuffer);
+        GraphicsDevice.Indices = _indexBuffer;
+        
+        GraphicsDevice.RasterizerState = RasterizerState.CullNone;
         GraphicsDevice.DepthStencilState = DepthStencilState.Default;
-        GraphicsDevice.BlendState = BlendState.Opaque;
+        GraphicsDevice.BlendState = BlendState.AlphaBlend;
 
-        InitBuffers();
-
-        foreach (EffectPass pass in _effect.CurrentTechnique.Passes)
+        int idxOffset = 0;
+        int vtxOffset = 0;
+        
+        for (int i = 0; i < _particleGeometries.Length; i++)
         {
-            pass.Apply();
+            if (!_particleGeometries[i].IsActive)
+                continue;
 
-            if (UseIndexedVertices)
+            Effect effect = UpdateEffect(ref _particleGeometries[i]);
+
+            foreach (EffectPass pass in effect.CurrentTechnique.Passes)
             {
+                pass.Apply();
+
                 GraphicsDevice.DrawIndexedPrimitives(
-                    primitiveType: PrimitiveType.TriangleList, 
-                    baseVertex: 0, 
-                    startIndex: 0, 
-                    primitiveCount: _indexBuffer.IndexCount / 3
-                );
-            }
-            else
-            {
-                GraphicsDevice.DrawPrimitives(
-                    primitiveType: PrimitiveType.TriangleList, 
-                    vertexStart: 0, 
-                    primitiveCount: _vertexBuffer.VertexCount / 2
-                );
-            }
-        }
-    }
-
-    private void DrawParticleGeometry(ref ParticleGeometry particleGeometry, Matrix world, Matrix view, Matrix projection)
-    {
-        _effect.World = 
-            Matrix.CreateScale(particleGeometry.Size) * 
-            Matrix.CreateTranslation(particleGeometry.Position);
-        
-        _effect.View = view;
-        _effect.Projection = projection;
-
-        //_effect.DiffuseColor = particleGeometry.Color.ToVector3();
-        _effect.Alpha = particleGeometry.Color.A / 255f;
-
-        GraphicsDevice.RasterizerState = RasterizerState.CullCounterClockwise;
-        GraphicsDevice.DepthStencilState = DepthStencilState.Default;
-
-        GraphicsDevice.BlendState = 
-            particleGeometry.Color.A < 255 ? 
-                BlendState.AlphaBlend : 
-                BlendState.Opaque;
-
-        if (UseDynamicBuffers)
-        {
-            _vertexBuffer = new DynamicVertexBuffer(
-                graphicsDevice: GraphicsDevice,
-                type: typeof(VertexPositionColor),
-                vertexCount: particleGeometry.Vertices.Length,
-                bufferUsage: BufferUsage.WriteOnly
-            );
-
-            if (UseIndexedVertices)
-            {
-                _indexBuffer = new DynamicIndexBuffer(
-                    graphicsDevice: GraphicsDevice,
-                    indexType: typeof(ushort),
-                    indexCount: particleGeometry.Indices.Length,
-                    usage: BufferUsage.WriteOnly
-                );
-            }
-        }
-        else
-        {
-            _vertexBuffer = new VertexBuffer(
-                graphicsDevice: GraphicsDevice, 
-                type: typeof(VertexPositionColor),
-                vertexCount: particleGeometry.Vertices.Length,
-                bufferUsage: BufferUsage.WriteOnly
-            );
-            
-            if (UseIndexedVertices)
-            {
-                _indexBuffer = new IndexBuffer(
-                    graphicsDevice: GraphicsDevice, 
-                    indexType: typeof(ushort), 
-                    indexCount: particleGeometry.Indices.Length, 
-                    usage: BufferUsage.WriteOnly
-                );
-            }
-        }
-
-        if (particleGeometry.Vertices.Length > 0)
-            _vertexBuffer.SetData(particleGeometry.Vertices);
-
-        GraphicsDevice.SetVertexBuffer(_vertexBuffer);
-
-        if (UseIndexedVertices)
-        {
-            if (particleGeometry.Indices.Length > 0)
-                _indexBuffer.SetData(particleGeometry.Indices);
-
-            GraphicsDevice.Indices = _indexBuffer;
-        }
-
-        foreach (EffectPass pass in _effect.CurrentTechnique.Passes)
-        {
-            pass.Apply();
-
-            if (UseIndexedVertices)
-            {
-                GraphicsDevice.DrawUserIndexedPrimitives(
                     primitiveType: PrimitiveType.TriangleList,
-                    vertexData: particleGeometry.Vertices,
-                    vertexOffset: 0,
-                    indexOffset: 0,
-                    primitiveCount: particleGeometry.Indices.Length / 3,
-                    numVertices: particleGeometry.Vertices.Length,
-                    indexData: particleGeometry.Indices,
-                    vertexDeclaration: VertexPositionColor.VertexDeclaration
+                    baseVertex: vtxOffset,
+                    startIndex: idxOffset,
+                    primitiveCount: _indexData.Length / 3
                 );
-
-                //GraphicsDevice.DrawIndexedPrimitives(
-                //    primitiveType: PrimitiveType.TriangleList, 
-                //    baseVertex: 0, 
-                //    startIndex: 0,
-                //    primitiveCount: particleGeometry.Indices.Length / 3
-                //);
             }
-            else
-            {
-                GraphicsDevice.DrawUserPrimitives(
-                    primitiveType: PrimitiveType.TriangleList,
-                    vertexData: particleGeometry.Vertices,
-                    vertexOffset: 0,
-                    primitiveCount: particleGeometry.Vertices.Length / 3, 
-                    vertexDeclaration: VertexPositionColor.VertexDeclaration
-                );
 
-                //GraphicsDevice.DrawPrimitives(
-                //    primitiveType: PrimitiveType.TriangleList,
-                //    vertexStart: 0,
-                //    primitiveCount: particleGeometry.Vertices.Length / 2
-                //);
-            }
+            idxOffset += _particleGeometries[i].Indices.Length;
+            vtxOffset += _particleGeometries[i].Vertices.Length;
         }
     }
 

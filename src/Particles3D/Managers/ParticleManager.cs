@@ -13,7 +13,7 @@ namespace Particles3D.Managers;
 public class ParticleManager
 {
     private GameMain _game;
-    private readonly Vector3 _gravityForce = Vector3.Down * 0.05f;
+    private readonly Vector3 _gravityForce = Vector3.Down * 10f;
 
     private static Texture2D PixelTexture;
     private static Vector2 PixelOrigin;
@@ -36,31 +36,35 @@ public class ParticleManager
     {
     }
 
-    public void Draw(GameTime gameTime, out ParticleGeometry[] particleGeometries)
+    public void Draw(GameTime gameTime, ref ParticleGeometry[] particleGeometries)
     {
         if (_game.GraphicsDevice == null)
-        {
-            particleGeometries = default;
             return;
-        }
 
         Span<Particle> particles = _particles.GetSpan();
-        
-        particleGeometries = new ParticleGeometry[_particles.Count];
+
+        if (particleGeometries == null || particleGeometries.Length < _particles.Count)
+        {
+            particleGeometries = new ParticleGeometry[(int)(_particles.Count * 1.5f)];
+        }
+
+        for (int i = 0; i < particleGeometries.Length; i++)
+        {
+            particleGeometries[i].IsActive = false;
+        }
 
         for (int i = 0; i < _particles.Count; i++)
         {
             float normalizedAge = (float)(particles[i].Age / particles[i].Lifetime);
+            
             Color color = Color.Lerp(particles[i].ColorStart, particles[i].ColorEnd, normalizedAge);
-            float size = MathHelper.Lerp(particles[i].SizeStart, particles[i].SizeEnd, normalizedAge);
-
-            //Color color = particles[i].ColorStart;
-            //float size = particles[i].SizeStart;
-            particleGeometries[i] = new ParticleGeometry(particles[i].Position, size, color);
+            float size = MathHelper.Lerp(particles[i].SizeStart, particles[i].SizeEnd, normalizedAge * normalizedAge * (3-(2 * normalizedAge)));
+            
+            particleGeometries[i].Init(particles[i].Position, size, color);
         }
     }
 
-    private double _spawnInterval = 1.0 / 10;
+    private double _spawnInterval = 1.0 / 100;
     private double _spawnTimer = 0.0;
 
     public void Update(GameTime gameTime)
@@ -106,7 +110,7 @@ public class ParticleManager
         //var viewportCenter = _game.GraphicsDevice.Viewport.Bounds.Center;
         //Vector3 position = new Vector3(viewportCenter.X, viewportCenter.Y, 0.0f);
 
-        float force = 10f;
+        float force = _rand.NextSingle(min: 25f, max: 40f);
 
         Vector3 position = new Vector3(0f, 0f, 0f);
         
@@ -119,12 +123,12 @@ public class ParticleManager
         {
             Position = position,
             Velocity = velocity,
-            SizeStart = 10.0f,
-            SizeEnd = 2.0f,
-            Lifetime = 10.0f,
+            SizeStart = 3.0f,
+            SizeEnd = 0.0f,
+            Lifetime = 4.0f,
             RotationalVelocity = 0f,
             ColorStart = Color.Blue,
-            ColorEnd = Color.Red,
+            ColorEnd = Color.Transparent,
             IsActive = true
         };
 

@@ -18,17 +18,39 @@ internal enum VertexCorner
 
 public struct ParticleGeometry
 {
-    public VertexPositionColor[] Vertices;
-    public short[] Indices;
-    public Color Color;
-    public Vector3 Position;
-    public float Size;
+    public VertexPositionColor[] Vertices = default;
+    public ushort[] Indices = default;
+    public Color Color = default;
+    public Vector3 Position = default;
+    public float Size = default;
+    public bool IsActive = false;
+
+    public ParticleGeometry()
+    {
+        Clear();
+    }
 
     public ParticleGeometry(Vector3 position, float size, Color color, RasterizerState rasterizerState = null)
+    {
+        Init(position, size, color, rasterizerState);
+    }
+
+    public void Clear()
+    {
+        Vertices = default;
+        Indices = default;
+        Color = default;
+        Position = default;
+        Size = default;
+        IsActive = false;
+    }
+
+    public void Init(Vector3 position, float size, Color color, RasterizerState rasterizerState = null)
     {
         Position = position;
         Size = size;
         Color = color;
+        IsActive = true;
 
         // Vector3.Up.Y == 1 (positive)
         // 0: X - size/2  Y + size/2    Left Top 
@@ -36,8 +58,8 @@ public struct ParticleGeometry
         // 2: X + size/2  Y - size/2    Right Bottom 
         // 3: X + size/2  Y + size/2    Right Top 
 
-        //RectangleF rect = new RectangleF(position.X - size * 0.5f, position.Y - size * 0.5f, size, size);
         RectangleF rect = new RectangleF(-0.5f, -0.5f, 1f, 1f);
+        //RectangleF rect = new RectangleF(position.X - (size * 0.5f), position.Y - (size * 0.5f), size, size);
         
         Vertices = new VertexPositionColor[4];
         Vertices[(int)VertexCorner.TopLeft] = new VertexPositionColor(new Vector3(rect.TopLeft, 0f), color);
@@ -45,7 +67,7 @@ public struct ParticleGeometry
         Vertices[(int)VertexCorner.BottomRight] = new VertexPositionColor(new Vector3(rect.BottomRight, 0f), color);
         Vertices[(int)VertexCorner.TopRight] = new VertexPositionColor(new Vector3(rect.TopRight, 0f), color);
 
-        Indices = new short[6];
+        Indices = new ushort[6];
         if (rasterizerState == null || rasterizerState == RasterizerState.CullClockwise)
         {
             /*
